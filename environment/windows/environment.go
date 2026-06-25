@@ -342,7 +342,7 @@ func (e *Environment) runSteamPreset(ctx context.Context) error {
 	}
 	mods := e.allWorkshopMods()
 	for _, mod := range mods {
-		if err := e.runSteamCMD(ctx, steamcmd, "+login", e.env("STEAM_USER", "anonymous"), e.env("STEAM_PASS", ""), "+workshop_download_item", "107410", mod, "+quit"); err != nil {
+		if err := e.runSteamCMD(ctx, steamcmd, "+force_install_dir", e.meta.Root, "+login", e.env("STEAM_USER", "anonymous"), e.env("STEAM_PASS", ""), "+workshop_download_item", "107410", mod, "+quit"); err != nil {
 			return err
 		}
 		e.linkWorkshopMod(mod)
