@@ -13,13 +13,13 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
         include:
           - language: go
-            build-mode: autobuild
+            build-mode: manual
     permissions:
       actions: read
       contents: read
@@ -33,6 +33,18 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+
+      - name: Setup Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: 1.24.11
+
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: amd64
+        run: go build -v -trimpath github.com/pterodactyl/wings
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@0499de31b99561a6d14a36a5f662c2a54f91beee # v3.29.5

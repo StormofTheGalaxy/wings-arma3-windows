@@ -6,7 +6,7 @@ on:
 jobs:
   release:
     name: Release
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     permissions:
       contents: write
     steps:
@@ -21,27 +21,16 @@ jobs:
       - name: Build release binaries
         env:
           CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: amd64
+          SRC_PATH: github.com/pterodactyl/wings
         run: |
-          GOARCH=amd64 go build -o dist/wings_linux_amd64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${{ github.ref_name }}" github.com/pterodactyl/wings
-          chmod 755 dist/wings_linux_amd64
-          GOARCH=arm64 go build -o dist/wings_linux_arm64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${{ github.ref_name }}" github.com/pterodactyl/wings
-          chmod 755 dist/wings_linux_arm64
-
-      - name: Create release branch
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          BRANCH=release/${{ env.VERSION }}
-          git config --local user.email "ci@pterodactyl.io"
-          git config --local user.name "Pterodactyl CI"
-          git checkout -b $BRANCH
-          git push -u origin $BRANCH
-          sed -i "s/var Version = \".*\"/var Version = \"${VERSION:1}\"/" system/const.go
-          git add system/const.go
-          git commit -m "ci(release): bump version"
-          git push
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -o dist/wings.exe -v -trimpath -ldflags="-s -w -X $env:SRC_PATH/system.Version=${{ github.ref_name }}" $env:SRC_PATH
+          Compress-Archive -Path dist/wings.exe -DestinationPath dist/wings_windows_amd64.zip -Force
 
       - name: write changelog
+        shell: bash
         run: |
           sed -n "/^## ${{ github.ref_name }}/,/^## /{/^## /b;p}" CHANGELOG.md > ./RELEASE_CHANGELOG
 
@@ -53,4 +42,4 @@ jobs:
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
           body_path: ./RELEASE_CHANGELOG
           files: |
-            dist/*
+            dist/wings_windows_amd64.zip

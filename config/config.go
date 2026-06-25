@@ -22,7 +22,6 @@ import (
 	"github.com/apex/log"
 	"github.com/creasty/defaults"
 	"github.com/gbrlsnchs/jwt/v3"
-	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v2"
 
 	"github.com/pterodactyl/wings/system"
@@ -819,13 +818,11 @@ func UseOpenat2() bool {
 		openat2.Store(false)
 		return false
 	default:
-		fd, err := unix.Openat2(unix.AT_FDCWD, "/", &unix.OpenHow{})
-		if err != nil {
-			log.WithError(err).Warn("error occurred while checking for openat2 support, falling back to openat")
+		if !openat2Supported() {
+			log.Warn("openat2 is not supported, falling back to openat")
 			openat2.Store(false)
 			return false
 		}
-		_ = unix.Close(fd)
 		openat2.Store(true)
 		return true
 	}

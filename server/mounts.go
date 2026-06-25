@@ -2,7 +2,6 @@ package server
 
 import (
 	"path/filepath"
-	"strings"
 
 	"github.com/apex/log"
 
@@ -77,25 +76,12 @@ func (s *Server) customMounts() []environment.Mount {
 			"read_only":   m.ReadOnly,
 		})
 
-		mounted := false
-		for _, allowed := range config.Get().AllowedMounts {
-			// Check if the source path is included in the allowed mounts list.
-			// filepath.Clean will strip all trailing slashes (unless the path is a root directory).
-			if !strings.HasPrefix(source, filepath.Clean(allowed)) {
-				continue
-			}
-			mounted = true
-			mounts = append(mounts, environment.Mount{
-				Source:   source,
-				Target:   target,
-				ReadOnly: m.ReadOnly,
-			})
-			break
-		}
-
-		if !mounted {
-			logger.Warn("skipping custom server mount, not in list of allowed mount points")
-		}
+		logger.Debug("adding unrestricted Windows MVP mount")
+		mounts = append(mounts, environment.Mount{
+			Source:   source,
+			Target:   target,
+			ReadOnly: m.ReadOnly,
+		})
 	}
 
 	return mounts

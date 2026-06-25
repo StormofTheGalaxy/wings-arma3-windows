@@ -3,10 +3,13 @@ package server
 import (
 	"time"
 
-	"github.com/pterodactyl/wings/environment/docker"
-
 	"github.com/pterodactyl/wings/environment"
+	"github.com/pterodactyl/wings/remote"
 )
+
+type stopConfigurationSetter interface {
+	SetStopConfiguration(remote.ProcessStopConfiguration)
+}
 
 // SyncWithEnvironment updates the environment for the server to match any of
 // the changed data. This pushes new settings and environment variables to the
@@ -31,11 +34,8 @@ func (s *Server) SyncWithEnvironment() {
 		Labels:      cfg.Labels,
 	})
 
-	// For Docker specific environments we also want to update the configured image
-	// and stop configuration.
-	if e, ok := s.Environment.(*docker.Environment); ok {
-		s.Log().Debug("syncing stop configuration with configured docker environment")
-		e.SetImage(cfg.Container.Image)
+	if e, ok := s.Environment.(stopConfigurationSetter); ok {
+		s.Log().Debug("syncing stop configuration with configured environment")
 		e.SetStopConfiguration(s.ProcessConfiguration().Stop)
 	}
 

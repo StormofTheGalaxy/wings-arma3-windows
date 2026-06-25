@@ -8,8 +8,6 @@ import (
 	iofs "io/fs"
 	"os"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -123,55 +121,24 @@ func ensurePathError(err error, op, path string) error {
 
 // errnoToPathError converts an errno into a proper path error.
 func errnoToPathError(err syscall.Errno, op, path string) error {
-	switch err {
-	// File exists
-	case unix.EEXIST:
+	switch {
+	case errors.Is(err, os.ErrExist):
 		return &PathError{
 			Op:   op,
 			Path: path,
 			Err:  ErrExist,
 		}
-	// Is a directory
-	case unix.EISDIR:
-		return &PathError{
-			Op:   op,
-			Path: path,
-			Err:  ErrIsDirectory,
-		}
-	// Not a directory
-	case unix.ENOTDIR:
-		return &PathError{
-			Op:   op,
-			Path: path,
-			Err:  ErrNotDirectory,
-		}
-	// No such file or directory
-	case unix.ENOENT:
+	case errors.Is(err, os.ErrNotExist):
 		return &PathError{
 			Op:   op,
 			Path: path,
 			Err:  ErrNotExist,
 		}
-	// Operation not permitted
-	case unix.EPERM:
+	case errors.Is(err, os.ErrPermission):
 		return &PathError{
 			Op:   op,
 			Path: path,
 			Err:  ErrPermission,
-		}
-	// Invalid cross-device link
-	case unix.EXDEV:
-		return &PathError{
-			Op:   op,
-			Path: path,
-			Err:  ErrBadPathResolution,
-		}
-	// Too many levels of symbolic links
-	case unix.ELOOP:
-		return &PathError{
-			Op:   op,
-			Path: path,
-			Err:  ErrBadPathResolution,
 		}
 	default:
 		return &PathError{

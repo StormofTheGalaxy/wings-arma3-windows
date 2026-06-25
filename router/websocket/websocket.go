@@ -21,7 +21,6 @@ import (
 
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/environment"
-	"github.com/pterodactyl/wings/environment/docker"
 	"github.com/pterodactyl/wings/router/tokens"
 	"github.com/pterodactyl/wings/server"
 )
@@ -437,14 +436,6 @@ func (h *Handler) HandleInbound(ctx context.Context, m Message) error {
 			//  so that we can better handle this and only set the environment to booted once we're attached.
 			//
 			//  Or maybe just an IsBooted function?
-			if h.server.Environment.State() == environment.ProcessStartingState {
-				if e, ok := h.server.Environment.(*docker.Environment); ok {
-					if !e.IsAttached() {
-						return nil
-					}
-				}
-			}
-
 			if err := h.server.Environment.SendCommand(strings.Join(m.Args, "")); err != nil {
 				return err
 			}
