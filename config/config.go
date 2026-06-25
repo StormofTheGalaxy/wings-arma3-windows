@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -484,6 +485,13 @@ func WriteToDisk(c *Configuration) error {
 // This function IS NOT thread safe and should only be called in the main thread
 // when the application is booting.
 func EnsurePterodactylUser() error {
+	if runtime.GOOS == "windows" {
+		_config.System.Username = system.FirstNotEmpty(_config.System.Username, "Administrator")
+		_config.System.User.Uid = 0
+		_config.System.User.Gid = 0
+		return nil
+	}
+
 	sysName, err := getSystemName()
 	if err != nil {
 		return err
