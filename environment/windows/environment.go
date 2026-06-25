@@ -210,13 +210,23 @@ func (e *Environment) SendCommand(command string) error {
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
 	cmd.Dir = e.meta.Root
 	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
-	out, err := cmd.CombinedOutput()
-	for _, line := range bytes.Split(out, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) > 0 {
-			e.publishLine("[powershell] " + string(line))
-		}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
 	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan struct{}, 2)
+	go func() { e.scanPipe("powershell", stdout); done <- struct{}{} }()
+	go func() { e.scanPipe("powershell", stderr); done <- struct{}{} }()
+	err = cmd.Wait()
+	<-done
+	<-done
 	return err
 }
 
@@ -530,10 +540,14 @@ func (e *Environment) waitMain(cmd *exec.Cmd) {
 }
 
 func (e *Environment) scanPipe(prefix string, r io.Reader) {
-	s := bufio.NewScanner(r)
-	for s.Scan() {
-		e.publishLine("[" + prefix + "] " + s.Text())
-	}
+	readLowLatency(r, 75*time.Millisecond, func(b []byte) {
+		for _, line := range splitOutputChunk(b) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			e.publishLine("[" + prefix + "] " + string(bytes.TrimRight(line, "\r\n")))
+		}
+	})
 }
 
 func (e *Environment) publishLine(line string) {
@@ -599,6 +613,66 @@ func (e *Environment) runAndStream(prefix string, cmd *exec.Cmd) error {
 	<-done
 	<-done
 	return err
+}
+
+func readLowLatency(r io.Reader, flushInterval time.Duration, callback func([]byte)) {
+	chunks := make(chan []byte, 32)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				b := make([]byte, n)
+				copy(b, buf[:n])
+				chunks <- b
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+	var pending bytes.Buffer
+	flush := func() {
+		if pending.Len() == 0 {
+			return
+		}
+		b := make([]byte, pending.Len())
+		copy(b, pending.Bytes())
+		pending.Reset()
+		callback(b)
+	}
+	for {
+		select {
+		case b := <-chunks:
+			pending.Write(b)
+			if bytes.ContainsAny(b, "\r\n") || pending.Len() >= 4096 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-done:
+			for {
+				select {
+				case b := <-chunks:
+					pending.Write(b)
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
+}
+
+func splitOutputChunk(b []byte) [][]byte {
+	b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+	b = bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
+	return bytes.Split(b, []byte("\n"))
 }
 
 func (e *Environment) env(key, fallback string) string {
