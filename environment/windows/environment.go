@@ -109,6 +109,9 @@ func (e *Environment) Start(ctx context.Context) error {
 	if running, _ := e.IsRunning(ctx); running {
 		return nil
 	}
+	if err := e.killExistingArmaProcesses(ctx, true, true); err != nil {
+		return err
+	}
 
 	e.SetState(environment.ProcessStartingState)
 	if err := e.prepareArma(ctx); err != nil {
@@ -130,6 +133,7 @@ func (e *Environment) Start(ctx context.Context) error {
 	e.cmd = cmd
 	e.startedAt = time.Now()
 	e.mu.Unlock()
+	e.writePIDFile("server.pid", cmd.Process.Pid)
 
 	if err := e.startHeadlessClients(ctx); err != nil {
 		e.publishLine("[daemon] failed to start one or more headless clients: " + err.Error())
@@ -205,6 +209,9 @@ func (e *Environment) SendCommand(command string) error {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil
+	}
+	if isRestartHeadlessCommand(command) {
+		return e.RestartHeadlessClients(context.Background())
 	}
 	e.publishLine("> powershell " + command)
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
@@ -487,7 +494,9 @@ func (e *Environment) startHeadlessClients(ctx context.Context) error {
 	if n <= 0 {
 		return nil
 	}
+	_ = e.killExistingArmaProcesses(ctx, false, true)
 	var first error
+	var pids []int
 	for i := 1; i <= n; i++ {
 		cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), "-par=startup_params_hc.txt")
 		if err != nil {
@@ -505,9 +514,21 @@ func (e *Environment) startHeadlessClients(ctx context.Context) error {
 		e.mu.Lock()
 		e.hc = append(e.hc, cmd)
 		e.mu.Unlock()
+		e.writePIDFile(fmt.Sprintf("hc-%d.pid", i), cmd.Process.Pid)
+		pids = append(pids, cmd.Process.Pid)
 		go func(c *exec.Cmd) { _ = c.Wait() }(cmd)
 	}
+	e.writePIDList("hc.pids", pids)
 	return first
+}
+
+func (e *Environment) RestartHeadlessClients(ctx context.Context) error {
+	e.publishLine("[daemon] restarting headless clients")
+	e.killHeadless(ctx, true)
+	if err := e.killExistingArmaProcesses(ctx, false, true); err != nil {
+		return err
+	}
+	return e.startHeadlessClients(ctx)
 }
 
 func (e *Environment) command(binary string, args ...string) (*exec.Cmd, error) {
@@ -558,6 +579,7 @@ func (e *Environment) waitMain(cmd *exec.Cmd) {
 	if err != nil {
 		e.publishLine(fmt.Sprintf("[daemon] server exited with code %d: %s", code, err.Error()))
 	}
+	e.removePIDFile("server.pid")
 	e.killHeadless(context.Background(), true)
 	e.SetState(environment.ProcessOfflineState)
 }
@@ -622,6 +644,134 @@ func (e *Environment) killHeadless(ctx context.Context, force bool) {
 		if cmd != nil && cmd.Process != nil {
 			_ = killProcessTree(ctx, cmd.Process.Pid, force)
 		}
+	}
+	e.removeHeadlessPIDFiles()
+}
+
+func (e *Environment) pidDir() string {
+	return filepath.Join(e.meta.Root, ".wings-pids")
+}
+
+func (e *Environment) writePIDFile(name string, pid int) {
+	if pid <= 0 {
+		return
+	}
+	if err := os.MkdirAll(e.pidDir(), 0o755); err != nil {
+		e.publishLine("[daemon] failed to create pid directory: " + err.Error())
+		return
+	}
+	if err := os.WriteFile(filepath.Join(e.pidDir(), name), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		e.publishLine("[daemon] failed to write pid file " + name + ": " + err.Error())
+	}
+}
+
+func (e *Environment) writePIDList(name string, pids []int) {
+	if err := os.MkdirAll(e.pidDir(), 0o755); err != nil {
+		e.publishLine("[daemon] failed to create pid directory: " + err.Error())
+		return
+	}
+	var lines []string
+	for _, pid := range pids {
+		if pid > 0 {
+			lines = append(lines, strconv.Itoa(pid))
+		}
+	}
+	if err := os.WriteFile(filepath.Join(e.pidDir(), name), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		e.publishLine("[daemon] failed to write pid file " + name + ": " + err.Error())
+	}
+}
+
+func (e *Environment) removePIDFile(name string) {
+	_ = os.Remove(filepath.Join(e.pidDir(), name))
+}
+
+func (e *Environment) removeHeadlessPIDFiles() {
+	entries, err := os.ReadDir(e.pidDir())
+	if err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == "hc.pids" || strings.HasPrefix(name, "hc-") && strings.HasSuffix(name, ".pid") {
+				_ = os.Remove(filepath.Join(e.pidDir(), name))
+			}
+		}
+	}
+}
+
+func (e *Environment) readPIDFile(name string) []int {
+	b, err := os.ReadFile(filepath.Join(e.pidDir(), name))
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Fields(string(b)) {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func (e *Environment) killExistingArmaProcesses(ctx context.Context, server bool, hc bool) error {
+	if server {
+		for _, pid := range e.readPIDFile("server.pid") {
+			_ = killProcessTree(ctx, pid, true)
+		}
+		e.removePIDFile("server.pid")
+	}
+	if hc {
+		for _, pid := range e.readPIDFile("hc.pids") {
+			_ = killProcessTree(ctx, pid, true)
+		}
+		e.removeHeadlessPIDFiles()
+	}
+	return e.killProcessesByCommandLine(ctx, server, hc)
+}
+
+func (e *Environment) killProcessesByCommandLine(ctx context.Context, server bool, hc bool) error {
+	var params []string
+	if server {
+		params = append(params, "startup_params_server.txt")
+	}
+	if hc {
+		params = append(params, "startup_params_hc.txt")
+	}
+	if len(params) == 0 {
+		return nil
+	}
+
+	var checks []string
+	for _, param := range params {
+		checks = append(checks, fmt.Sprintf("$cmd.Contains(%s)", powershellQuote(param)))
+	}
+	script := fmt.Sprintf(`$root = %s
+Get-CimInstance Win32_Process | Where-Object {
+  $cmd = [string]$_.CommandLine
+  $cmd.Contains($root) -and (%s)
+} | ForEach-Object {
+  try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+}`,
+		powershellQuote(e.meta.Root), strings.Join(checks, " -or "))
+
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.Dir = e.meta.Root
+	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return errors.Wrapf(err, "failed to kill existing Arma processes: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func powershellQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+}
+
+func isRestartHeadlessCommand(command string) bool {
+	switch strings.ToLower(strings.TrimSpace(command)) {
+	case "restart-hc", "hc-restart", "restart_hc", "hc_restart":
+		return true
+	default:
+		return false
 	}
 }
 
