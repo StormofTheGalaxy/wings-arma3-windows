@@ -605,7 +605,11 @@ func (e *Environment) env(key, fallback string) string {
 	prefix := strings.ToUpper(key) + "="
 	for _, kv := range e.Configuration.EnvironmentVariables() {
 		if strings.HasPrefix(strings.ToUpper(kv), prefix) {
-			return strings.TrimPrefix(kv, kv[:len(prefix)])
+			value := strings.TrimSpace(strings.TrimPrefix(kv, kv[:len(prefix)]))
+			if value == "" {
+				return fallback
+			}
+			return value
 		}
 	}
 	return fallback
