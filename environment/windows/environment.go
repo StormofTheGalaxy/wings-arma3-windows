@@ -404,7 +404,7 @@ func (e *Environment) runSteamCMD(ctx context.Context, steamcmd string, args ...
 			clean = append(clean, arg)
 		}
 	}
-	e.publishLine("[update] running SteamCMD " + strings.Join(clean, " "))
+	e.publishLine("[update] running SteamCMD")
 	cmd := exec.CommandContext(ctx, steamcmd, clean...)
 	cmd.Dir = e.meta.Root
 	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
