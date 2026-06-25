@@ -21,11 +21,29 @@ type windowsDirEntry struct {
 
 func (de windowsDirEntry) Name() string { return de.entry.Name() }
 
-func (de windowsDirEntry) IsDir() bool { return de.entry.IsDir() }
+func (de windowsDirEntry) IsDir() bool { return de.Type().IsDir() }
 
-func (de windowsDirEntry) Type() FileMode { return de.entry.Type() }
+func (de windowsDirEntry) Type() FileMode {
+	if de.entry.Type()&ModeSymlink != 0 {
+		if info, err := os.Stat(de.fs.fullPath(de.path)); err == nil && info.IsDir() {
+			return ModeDir
+		}
+	}
+	return de.entry.Type()
+}
 
-func (de windowsDirEntry) Info() (FileInfo, error) { return de.entry.Info() }
+func (de windowsDirEntry) Info() (FileInfo, error) {
+	info, err := de.entry.Info()
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&ModeSymlink != 0 {
+		if targetInfo, statErr := os.Stat(de.fs.fullPath(de.path)); statErr == nil && targetInfo.IsDir() {
+			return targetInfo, nil
+		}
+	}
+	return info, nil
+}
 
 func (de windowsDirEntry) Open() (File, error) { return de.fs.OpenFile(de.path, O_RDONLY, 0) }
 
