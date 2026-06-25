@@ -591,6 +591,9 @@ func (e *Environment) publishLine(line string) {
 func (e *Environment) pollResources(ctx context.Context) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
+	var prevCPU uint64
+	var prevAt time.Time
+	netBaseline, _ := currentNetworkCounters()
 	for {
 		select {
 		case <-ctx.Done():
@@ -600,7 +603,12 @@ func (e *Environment) pollResources(ctx context.Context) {
 				return
 			}
 			uptime, _ := e.Uptime(ctx)
-			e.Events().Publish(environment.ResourceEvent, environment.Stats{Uptime: uptime, MemoryLimit: uint64(e.Configuration.Limits().MemoryLimit * 1024 * 1024)})
+			stats, cpu, at := e.resourceStats(prevCPU, prevAt, netBaseline)
+			prevCPU = cpu
+			prevAt = at
+			stats.Uptime = uptime
+			stats.MemoryLimit = uint64(e.Configuration.Limits().MemoryLimit * 1024 * 1024)
+			e.Events().Publish(environment.ResourceEvent, stats)
 		}
 	}
 }
