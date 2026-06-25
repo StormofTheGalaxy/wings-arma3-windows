@@ -404,7 +404,30 @@ func (e *Environment) runSteamCMD(ctx context.Context, steamcmd string, args ...
 			clean = append(clean, arg)
 		}
 	}
-	e.publishLine("[update] running SteamCMD")
+
+	// Create a redacted copy of the args for logging so sensitive values
+	// (Steam password passed after "+login") are not written to logs.
+	redacted := make([]string, len(clean))
+	copy(redacted, clean)
+	for i := 0; i < len(clean); i++ {
+		// If we see a separate "+login" token, the password is the token
+		// two positions after it: "+login" <user> <pass>
+		if strings.EqualFold(clean[i], "+login") {
+			if i+2 < len(redacted) {
+				redacted[i+2] = "REDACTED"
+			}
+			i += 2
+			continue
+		}
+		// If the login/token was passed in a single token (uncommon),
+		// mask anything after the "+login" prefix.
+		lower := strings.ToLower(clean[i])
+		if strings.HasPrefix(lower, "+login") && len(clean[i]) > len("+login") {
+			redacted[i] = "+login[REDACTED]"
+		}
+	}
+
+	e.publishLine("[update] running SteamCMD " + strings.Join(redacted, " "))
 	cmd := exec.CommandContext(ctx, steamcmd, clean...)
 	cmd.Dir = e.meta.Root
 	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
