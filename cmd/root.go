@@ -431,9 +431,10 @@ __ [blue][bold]Pterodactyl[reset] _____/___/_______ _______ ______
 \_____\    \/\/    /   /       /  __   /   ___/
    \___\          /   /   /   /  /_/  /___   /
         \___/\___/___/___/___/___    /______/
-                            /_______/ [bold]%s[reset]
+                            /_______/ [bold]%s for Windows[reset]
 
 Copyright © 2018 - %d Dane Everitt & Contributors
+with SoG Modifications for Windows by R-Artemev
 
 Website:  https://pterodactyl.io
  Source:  https://github.com/pterodactyl/wings

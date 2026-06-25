@@ -747,7 +747,7 @@ func (e *Environment) killProcessesByCommandLine(ctx context.Context, server boo
 	script := fmt.Sprintf(`$root = %s
 Get-CimInstance Win32_Process | Where-Object {
   $cmd = [string]$_.CommandLine
-  $cmd.Contains($root) -and (%s)
+  $_.ProcessId -ne $PID -and $cmd.Contains($root) -and (%s)
 } | ForEach-Object {
   try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
 }`,
@@ -757,7 +757,7 @@ Get-CimInstance Win32_Process | Where-Object {
 	cmd.Dir = e.meta.Root
 	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return errors.Wrapf(err, "failed to kill existing Arma processes: %s", strings.TrimSpace(string(out)))
+		e.publishLine(fmt.Sprintf("[daemon] warning: failed to scan existing Arma processes: %s %s", err.Error(), strings.TrimSpace(string(out))))
 	}
 	return nil
 }
