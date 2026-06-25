@@ -13,6 +13,22 @@ import (
 
 type WalkDiratFunc func(dirfd int, name, relative string, d DirEntry, err error) error
 
+type windowsDirEntry struct {
+	fs    *UnixFS
+	entry os.DirEntry
+	path  string
+}
+
+func (de windowsDirEntry) Name() string { return de.entry.Name() }
+
+func (de windowsDirEntry) IsDir() bool { return de.entry.IsDir() }
+
+func (de windowsDirEntry) Type() FileMode { return de.entry.Type() }
+
+func (de windowsDirEntry) Info() (FileInfo, error) { return de.entry.Info() }
+
+func (de windowsDirEntry) Open() (File, error) { return de.fs.OpenFile(de.path, O_RDONLY, 0) }
+
 type UnixFS struct {
 	basePath string
 }
@@ -27,13 +43,21 @@ func (fsys *UnixFS) Close() error { return nil }
 
 func (fsys *UnixFS) fullPath(name string) string {
 	name = filepath.Clean(filepath.FromSlash(name))
-	if filepath.IsAbs(name) {
-		return name
-	}
 	if name == "." || name == string(filepath.Separator) {
 		return fsys.basePath
 	}
+	if filepath.IsAbs(name) {
+		return name
+	}
 	return filepath.Join(fsys.basePath, name)
+}
+
+func joinRelative(base, name string) string {
+	base = filepath.Clean(filepath.FromSlash(base))
+	if base == "." || base == string(filepath.Separator) {
+		return name
+	}
+	return filepath.Join(base, name)
 }
 
 func (fsys *UnixFS) unsafePath(name string) (string, error) {
@@ -98,7 +122,15 @@ func (fsys *UnixFS) Touch(name string, flag int, perm FileMode) (File, error) {
 }
 
 func (fsys *UnixFS) ReadDir(name string) ([]DirEntry, error) {
-	return os.ReadDir(fsys.fullPath(name))
+	entries, err := os.ReadDir(fsys.fullPath(name))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, windowsDirEntry{fs: fsys, entry: entry, path: joinRelative(name, entry.Name())})
+	}
+	return out, nil
 }
 
 func (fsys *UnixFS) Remove(name string) error {
@@ -132,7 +164,10 @@ func (fsys *UnixFS) WalkDir(root string, fn WalkDirFunc) error {
 		if rerr != nil {
 			rel = path
 		}
-		return fn(filepath.ToSlash(rel), d, err)
+		if d == nil {
+			return fn(filepath.ToSlash(rel), nil, err)
+		}
+		return fn(filepath.ToSlash(rel), windowsDirEntry{fs: fsys, entry: d, path: rel}, err)
 	})
 }
 
@@ -143,7 +178,10 @@ func (fsys *UnixFS) WalkDirat(_ int, name string, fn WalkDiratFunc) error {
 		if rerr != nil || rel == "." {
 			rel = filepath.Base(path)
 		}
-		return fn(0, filepath.ToSlash(path), filepath.ToSlash(rel), d, err)
+		if d == nil {
+			return fn(0, filepath.ToSlash(path), filepath.ToSlash(rel), nil, err)
+		}
+		return fn(0, filepath.ToSlash(path), filepath.ToSlash(rel), windowsDirEntry{fs: fsys, entry: d, path: path}, err)
 	})
 }
 
