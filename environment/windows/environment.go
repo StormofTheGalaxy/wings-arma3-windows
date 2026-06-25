@@ -765,7 +765,7 @@ func (e *Environment) linkWorkshopMod(id string) {
 	}
 	target := filepath.Join(e.meta.Root, "@"+id)
 	_ = os.RemoveAll(target)
-	_ = exec.Command("cmd.exe", "/C", "mklink", "/J", target, source).Run()
+	_ = exec.Command("cmd.exe", "/C", "mklink", "/D", target, source).Run()
 	_ = filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".bikey") {
 			return nil
@@ -816,7 +816,7 @@ func (e *Environment) syncMountLinks() error {
 		}
 		target := filepath.Join(root, name)
 		_ = os.RemoveAll(target)
-		if err := exec.Command("cmd.exe", "/C", "mklink", "/J", target, m.Source).Run(); err != nil {
+		if err := exec.Command("cmd.exe", "/C", "mklink", "/D", target, m.Source).Run(); err != nil {
 			log.WithError(err).WithField("source", m.Source).Warn("failed to create mount junction")
 		}
 	}

@@ -50,7 +50,7 @@ for /D %%D in ("%WORKSHOP%\*") do (
             set /a SKIPPED+=1
         ) else (
             rmdir "!TARGET!" >nul 2>&1
-            mklink /J "!TARGET!" "!SRC!" >nul
+            mklink /D "!TARGET!" "!SRC!" >nul
             if errorlevel 1 (
                 echo FAIL @!ID!: could not create junction
                 set /a SKIPPED+=1
@@ -60,7 +60,7 @@ for /D %%D in ("%WORKSHOP%\*") do (
             )
         )
     ) else (
-        mklink /J "!TARGET!" "!SRC!" >nul
+        mklink /D "!TARGET!" "!SRC!" >nul
         if errorlevel 1 (
             echo FAIL @!ID!: could not create junction
             set /a SKIPPED+=1
