@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,6 +210,9 @@ func (e *Environment) SendCommand(command string) error {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil
+	}
+	if mission, ok := parseMissionDownloadCommand(command); ok {
+		return e.DownloadMission(context.Background(), mission)
 	}
 	if isRestartHeadlessCommand(command) {
 		return e.RestartHeadlessClients(context.Background())
@@ -531,6 +535,94 @@ func (e *Environment) RestartHeadlessClients(ctx context.Context) error {
 	return e.startHeadlessClients(ctx)
 }
 
+const defaultMissionDownloadBaseURL = "http://git.stormofgalaxy.com/SoG/MP_Mission/releases/download/latest"
+
+type missionDownloadCommand struct {
+	URL      string
+	Filename string
+}
+
+func (e *Environment) DownloadMission(ctx context.Context, mission missionDownloadCommand) error {
+	filename := strings.TrimSpace(mission.Filename)
+	if filename == "" {
+		filename = strings.TrimSpace(e.env("MISSION_PBO_NAME", ""))
+	}
+	if filename == "" {
+		missionName := strings.TrimSpace(e.env("MISSION_NAME", ""))
+		if missionName == "" {
+			return errors.New("environment/windows: mission name is not configured")
+		}
+		filename = missionName + ".pbo"
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), ".pbo") {
+		filename += ".pbo"
+	}
+	filename = filepath.Base(filename)
+	if filename == "." || filename == string(filepath.Separator) {
+		return errors.New("environment/windows: mission pbo filename is invalid")
+	}
+
+	downloadURL := strings.TrimSpace(mission.URL)
+	if downloadURL == "" {
+		baseURL := strings.TrimSpace(e.env("MISSION_DOWNLOAD_URL", defaultMissionDownloadBaseURL))
+		if strings.HasSuffix(strings.ToLower(baseURL), ".pbo") {
+			downloadURL = baseURL
+		} else {
+			downloadURL = strings.TrimRight(baseURL, "/") + "/" + filename
+		}
+	}
+	if downloadURL == "" {
+		return errors.New("environment/windows: mission download url is not configured")
+	}
+	if _, err := url.Parse(downloadURL); err != nil {
+		return err
+	}
+
+	mpMissions := e.env("MPMISSIONS_PATH", filepath.Join(e.meta.Root, "MPMissions"))
+	if err := os.MkdirAll(mpMissions, 0o755); err != nil {
+		return err
+	}
+
+	destination := filepath.Join(mpMissions, filepath.Base(filename))
+	tmp, err := os.CreateTemp(mpMissions, ".mission-*.pbo")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	e.publishLine("[mission] downloading mission " + downloadURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		_ = tmp.Close()
+		return errors.New("environment/windows: mission download failed with status " + res.Status)
+	}
+	if _, err := io.Copy(tmp, res.Body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	_ = os.Remove(destination)
+	if err := os.Rename(tmpPath, destination); err != nil {
+		return err
+	}
+	e.publishLine("[mission] mission updated: " + destination)
+	return nil
+}
+
 func (e *Environment) command(binary string, args ...string) (*exec.Cmd, error) {
 	binary = strings.Trim(binary, `"`)
 	if filepath.Ext(binary) == "" {
@@ -773,6 +865,31 @@ func isRestartHeadlessCommand(command string) bool {
 	default:
 		return false
 	}
+}
+
+func parseMissionDownloadCommand(command string) (missionDownloadCommand, bool) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return missionDownloadCommand{}, false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "build-mission-git", "mission-git", "update-mission-git", "git-mission", "download-mission", "mission-download", "update-mission":
+		mission := missionDownloadCommand{}
+		if len(fields) > 1 && isMissionPBOURL(fields[1]) {
+			mission.URL = fields[1]
+			if len(fields) > 2 {
+				mission.Filename = fields[2]
+			}
+		}
+		return mission, true
+	default:
+		return missionDownloadCommand{}, false
+	}
+}
+
+func isMissionPBOURL(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && strings.HasSuffix(strings.ToLower(u.Path), ".pbo")
 }
 
 func (e *Environment) runAndStream(prefix string, cmd *exec.Cmd) error {
