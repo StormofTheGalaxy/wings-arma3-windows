@@ -210,9 +210,6 @@ func (e *Environment) SendCommand(command string) error {
 	if command == "" {
 		return nil
 	}
-	if mission, ok := parseMissionGitCommand(command); ok {
-		return e.BuildMissionFromGit(context.Background(), mission)
-	}
 	if isRestartHeadlessCommand(command) {
 		return e.RestartHeadlessClients(context.Background())
 	}
@@ -534,98 +531,6 @@ func (e *Environment) RestartHeadlessClients(ctx context.Context) error {
 	return e.startHeadlessClients(ctx)
 }
 
-type missionGitCommand struct {
-	Repo   string
-	Branch string
-}
-
-func (e *Environment) BuildMissionFromGit(ctx context.Context, mission missionGitCommand) error {
-	repo := strings.TrimSpace(mission.Repo)
-	if repo == "" {
-		repo = e.env("MISSION_GIT_REPO", "")
-	}
-	if repo == "" {
-		return errors.New("environment/windows: mission git repository is not configured")
-	}
-
-	packer := e.env("FPACKEREX_PATH", filepath.Join(e.meta.Root, "FPackerEx.exe"))
-	if _, err := os.Stat(packer); err != nil {
-		return err
-	}
-	missionName := strings.TrimSpace(e.env("MISSION_NAME", ""))
-	if missionName == "" {
-		missionName = missionNameFromRepo(repo)
-	}
-	if missionName == "" {
-		missionName = "mission"
-	}
-
-	mpMissions := e.env("MPMISSIONS_PATH", filepath.Join(e.meta.Root, "MPMissions"))
-	workRoot := filepath.Join(e.meta.Root, ".wings-mission-build")
-	cloneDir := filepath.Join(workRoot, "repo")
-	buildDir := filepath.Join(workRoot, "mission")
-
-	e.publishLine("[mission] cloning mission repository " + repo)
-	_ = os.RemoveAll(workRoot)
-	if err := os.MkdirAll(workRoot, 0o755); err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(workRoot) }()
-
-	git := e.env("GIT_PATH", "git")
-	args := []string{"clone", "--recursive"}
-	if branch := strings.TrimSpace(mission.Branch); branch != "" {
-		args = append(args, "--branch", branch)
-	}
-	args = append(args, repo, cloneDir)
-	cmd := exec.CommandContext(ctx, git, args...)
-	cmd.Dir = e.meta.Root
-	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
-	if err := e.runAndStream("git", cmd); err != nil {
-		return err
-	}
-
-	cmd = exec.CommandContext(ctx, git, "submodule", "update", "--init", "--recursive")
-	cmd.Dir = cloneDir
-	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
-	if err := e.runAndStream("git", cmd); err != nil {
-		return err
-	}
-
-	e.publishLine("[mission] preparing clean mission directory")
-	if err := copyMissionTree(cloneDir, buildDir); err != nil {
-		return err
-	}
-	missionSQM := filepath.Join(buildDir, "MP_Mission", "mission.sqm")
-	if _, err := os.Stat(missionSQM); err != nil {
-		return err
-	}
-	if err := copyFile(missionSQM, filepath.Join(buildDir, "mission.sqm")); err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(mpMissions, 0o755); err != nil {
-		return err
-	}
-	packerArgs := []string{buildDir, "-o", mpMissions, "-n", missionName}
-	if cppToBin := strings.TrimSpace(e.env("CPPTOBIN_PATH", e.env("CPPTOBIN_BAT", ""))); cppToBin != "" {
-		packerArgs = append(packerArgs, "-b", cppToBin)
-	}
-	if e.env("MISSION_OBFUSCATE", "1") == "1" {
-		packerArgs = append(packerArgs, "--obfuscate")
-	}
-
-	e.publishLine("[mission] packing mission " + missionName + ".pbo")
-	cmd = exec.CommandContext(ctx, packer, packerArgs...)
-	cmd.Dir = e.meta.Root
-	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
-	if err := e.runAndStream("fpacker", cmd); err != nil {
-		return err
-	}
-	e.publishLine("[mission] mission updated: " + filepath.Join(mpMissions, missionName+".pbo"))
-	return nil
-}
-
 func (e *Environment) command(binary string, args ...string) (*exec.Cmd, error) {
 	binary = strings.Trim(binary, `"`)
 	if filepath.Ext(binary) == "" {
@@ -868,89 +773,6 @@ func isRestartHeadlessCommand(command string) bool {
 	default:
 		return false
 	}
-}
-
-func parseMissionGitCommand(command string) (missionGitCommand, bool) {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
-		return missionGitCommand{}, false
-	}
-	switch strings.ToLower(fields[0]) {
-	case "build-mission-git", "mission-git", "update-mission-git", "git-mission":
-		mission := missionGitCommand{}
-		if len(fields) > 1 {
-			mission.Repo = fields[1]
-		}
-		if len(fields) > 2 {
-			mission.Branch = fields[2]
-		}
-		return mission, true
-	default:
-		return missionGitCommand{}, false
-	}
-}
-
-func missionNameFromRepo(repo string) string {
-	repo = strings.TrimRight(strings.TrimSpace(repo), "/\\")
-	repo = strings.TrimSuffix(filepath.Base(repo), ".git")
-	replacer := strings.NewReplacer(" ", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	return strings.Trim(replacer.Replace(repo), ".")
-}
-
-func copyMissionTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if name == ".git" {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		if info.Mode()&os.ModeType != 0 {
-			return nil
-		}
-		return copyFile(path, target)
-	})
-}
-
-func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		return copyErr
-	}
-	return closeErr
 }
 
 func (e *Environment) runAndStream(prefix string, cmd *exec.Cmd) error {
