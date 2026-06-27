@@ -84,6 +84,12 @@ func (e *Environment) processTreePIDs() []uint32 {
 		}
 	}
 	e.mu.RUnlock()
+	for _, pid := range e.readPIDFile("server.pid") {
+		roots = append(roots, uint32(pid))
+	}
+	for _, pid := range e.readPIDFile("hc.pids") {
+		roots = append(roots, uint32(pid))
+	}
 	if len(roots) == 0 {
 		return nil
 	}

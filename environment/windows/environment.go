@@ -46,6 +46,7 @@ type Environment struct {
 	hc        []*exec.Cmd
 	startedAt time.Time
 	exitCode  uint32
+	steamcmd  bool
 
 	emitter *events.Bus
 	st      *system.AtomicString
@@ -196,6 +197,7 @@ func (e *Environment) Terminate(ctx context.Context, _ string) error {
 	if cmd != nil && cmd.Process != nil {
 		_ = killProcessTree(ctx, cmd.Process.Pid, true)
 	}
+	_ = e.killExistingArmaProcesses(ctx, true, true)
 	e.SetState(environment.ProcessOfflineState)
 	return nil
 }
@@ -212,7 +214,10 @@ func (e *Environment) SendCommand(command string) error {
 		return nil
 	}
 	if mission, ok := parseMissionDownloadCommand(command); ok {
-		return e.DownloadMission(context.Background(), mission)
+		return e.UpdateMissionWithRestart(context.Background(), mission)
+	}
+	if update, ok := parseUpdateCommand(command); ok {
+		return e.RunUpdate(context.Background(), update)
 	}
 	if isRestartHeadlessCommand(command) {
 		return e.RestartHeadlessClients(context.Background())
@@ -294,6 +299,16 @@ func (e *Environment) SetStopConfiguration(c remote.ProcessStopConfiguration) {
 	e.mu.Unlock()
 }
 
+func (e *Environment) setSteamCMDRunning(running bool) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if running && e.steamcmd {
+		return false
+	}
+	e.steamcmd = running
+	return true
+}
+
 func (e *Environment) Install(ctx context.Context) error {
 	if err := e.Create(); err != nil {
 		return err
@@ -342,21 +357,49 @@ func (e *Environment) runSteamPreset(ctx context.Context) error {
 		e.publishLine("[update] steamcmd.exe not found, skipping update: " + steamcmd)
 		return nil
 	}
-	serverArgs := []string{"+force_install_dir", e.meta.Root, "+login", e.env("STEAM_USER", "anonymous"), e.env("STEAM_PASS", ""), "+app_update", e.env("STEAMCMD_APPID", "233780")}
-	serverArgs = append(serverArgs, e.betaArgs()...)
-	if validate := e.validateArg(); validate != "" {
-		serverArgs = append(serverArgs, validate)
-	}
-	serverArgs = append(serverArgs, "+quit")
-	if err := e.runSteamCMD(ctx, steamcmd, serverArgs...); err != nil {
+	return e.runSteamPresetMode(ctx, steamcmd, updateMode{
+		Server: e.env("UPDATE_ONLY_MODS", "0") != "1",
+		Mods:   e.env("UPDATE_ONLY_SERVER", "0") != "1",
+	})
+}
+
+type updateMode struct {
+	Server bool
+	Mods   bool
+}
+
+func (e *Environment) RunUpdate(ctx context.Context, mode updateMode) error {
+	steamcmd := e.env("STEAMCMD_PATH", filepath.Join(e.meta.Root, "steamcmd", "steamcmd.exe"))
+	if _, err := os.Stat(steamcmd); err != nil {
 		return err
 	}
-	mods := e.allWorkshopMods()
-	for _, mod := range mods {
-		if err := e.runSteamCMD(ctx, steamcmd, "+force_install_dir", e.meta.Root, "+login", e.env("STEAM_USER", "anonymous"), e.env("STEAM_PASS", ""), "+workshop_download_item", "107410", mod, "+quit"); err != nil {
+	if !mode.Server && !mode.Mods {
+		mode.Server = true
+		mode.Mods = true
+	}
+	return e.runSteamPresetMode(ctx, steamcmd, mode)
+}
+
+func (e *Environment) runSteamPresetMode(ctx context.Context, steamcmd string, mode updateMode) error {
+	if mode.Server {
+		serverArgs := []string{"+force_install_dir", e.meta.Root, "+login", e.env("STEAM_USER", "anonymous"), e.env("STEAM_PASS", ""), "+app_update", e.env("STEAMCMD_APPID", "233780")}
+		serverArgs = append(serverArgs, e.betaArgs()...)
+		if validate := e.validateArg(); validate != "" {
+			serverArgs = append(serverArgs, validate)
+		}
+		serverArgs = append(serverArgs, "+quit")
+		if err := e.runSteamCMD(ctx, steamcmd, serverArgs...); err != nil {
 			return err
 		}
-		e.linkWorkshopMod(mod)
+	}
+	if mode.Mods {
+		mods := e.allWorkshopMods()
+		for _, mod := range mods {
+			if err := e.runSteamCMD(ctx, steamcmd, "+force_install_dir", e.meta.Root, "+login", e.env("STEAM_USER", "anonymous"), e.env("STEAM_PASS", ""), "+workshop_download_item", "107410", mod, "+quit"); err != nil {
+				return err
+			}
+			e.linkWorkshopMod(mod)
+		}
 	}
 	return nil
 }
@@ -409,6 +452,11 @@ func (e *Environment) validateArg() string {
 }
 
 func (e *Environment) runSteamCMD(ctx context.Context, steamcmd string, args ...string) error {
+	if !e.setSteamCMDRunning(true) {
+		return errors.New("environment/windows: SteamCMD is already running")
+	}
+	defer e.setSteamCMDRunning(false)
+
 	var clean []string
 	for _, arg := range args {
 		if strings.TrimSpace(arg) != "" {
@@ -448,8 +496,10 @@ func (e *Environment) runSteamCMD(ctx context.Context, steamcmd string, args ...
 func (e *Environment) writeStartupParams() error {
 	clientMods := e.clientMods()
 	serverMods := e.env("SERVERMODS", "")
+	profiles := e.env("ARMA_PROFILES", "profiles")
 	server := []string{
 		"-name=server",
+		"-profiles=" + profiles,
 		"-ip=0.0.0.0",
 		"-port=" + e.env("SERVER_PORT", "2302"),
 		"-cfg=basic.cfg",
@@ -467,7 +517,7 @@ func (e *Environment) writeStartupParams() error {
 	if e.env("PARAM_FILEPATCHING", "0") == "1" {
 		server = append(server, "-filePatching")
 	}
-	if e.env("PARAM_NOLOGS", "1") == "1" {
+	if e.env("PARAM_NOLOGS", "0") == "1" {
 		server = append(server, "-noLogs")
 	}
 	if maxMem := e.env("SERVER_MAXMEM", e.env("PARAM_MAXMEM", "")); maxMem != "" {
@@ -475,6 +525,7 @@ func (e *Environment) writeStartupParams() error {
 	}
 	hc := []string{
 		"-client",
+		"-profiles=" + profiles,
 		"-ip=127.0.0.1",
 		"-port=" + e.env("SERVER_PORT", "2302"),
 		"-password=" + e.env("SERVER_PASSWORD", ""),
@@ -502,7 +553,7 @@ func (e *Environment) startHeadlessClients(ctx context.Context) error {
 	var first error
 	var pids []int
 	for i := 1; i <= n; i++ {
-		cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), "-par=startup_params_hc.txt")
+		cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), "-par=startup_params_hc.txt", fmt.Sprintf("-name=hc-%d", i))
 		if err != nil {
 			if first == nil {
 				first = err
@@ -623,6 +674,24 @@ func (e *Environment) DownloadMission(ctx context.Context, mission missionDownlo
 	return nil
 }
 
+func (e *Environment) UpdateMissionWithRestart(ctx context.Context, mission missionDownloadCommand) error {
+	wasRunning, _ := e.IsRunning(ctx)
+	if wasRunning {
+		e.publishLine("[mission] stopping server before mission update")
+		if err := e.WaitForStop(ctx, 10*time.Minute, true); err != nil {
+			return err
+		}
+	}
+	if err := e.DownloadMission(ctx, mission); err != nil {
+		return err
+	}
+	if wasRunning {
+		e.publishLine("[mission] starting server after mission update")
+		return e.Start(ctx)
+	}
+	return nil
+}
+
 func (e *Environment) command(binary string, args ...string) (*exec.Cmd, error) {
 	binary = strings.Trim(binary, `"`)
 	if filepath.Ext(binary) == "" {
@@ -655,6 +724,7 @@ func (e *Environment) startProcess(_ context.Context, name string, cmd *exec.Cmd
 	e.publishLine(fmt.Sprintf("[daemon] started %s pid=%d", name, cmd.Process.Pid))
 	go e.scanPipe(name, stdout)
 	go e.scanPipe(name, stderr)
+	go e.tailArmaRPT(name, time.Now())
 	return nil
 }
 
@@ -887,6 +957,32 @@ func parseMissionDownloadCommand(command string) (missionDownloadCommand, bool) 
 	}
 }
 
+func parseUpdateCommand(command string) (updateMode, bool) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return updateMode{}, false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "update", "steam-update", "update-steam", "update-all":
+		mode := updateMode{Server: true, Mods: true}
+		for _, field := range fields[1:] {
+			switch strings.ToLower(field) {
+			case "--mods-only", "-mods-only", "mods-only", "--only-mods", "-only-mods", "only-mods":
+				mode = updateMode{Mods: true}
+			case "--server-only", "-server-only", "server-only", "--only-server", "-only-server", "only-server":
+				mode = updateMode{Server: true}
+			}
+		}
+		return mode, true
+	case "update-mods", "mods-update", "update_workshop", "update-workshop":
+		return updateMode{Mods: true}, true
+	case "update-server", "server-update", "update-version", "version-update":
+		return updateMode{Server: true}, true
+	default:
+		return updateMode{}, false
+	}
+}
+
 func isMissionPBOURL(value string) bool {
 	u, err := url.Parse(value)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && strings.HasSuffix(strings.ToLower(u.Path), ".pbo")
@@ -911,6 +1007,98 @@ func (e *Environment) runAndStream(prefix string, cmd *exec.Cmd) error {
 	<-done
 	<-done
 	return err
+}
+
+func (e *Environment) tailArmaRPT(prefix string, since time.Time) {
+	path := e.waitForArmaRPT(prefix, since)
+	if path == "" {
+		return
+	}
+	e.publishLine("[daemon] reading " + prefix + " RPT: " + path)
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	reader := bufio.NewReader(f)
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			e.publishLine("[" + prefix + " rpt] " + strings.TrimRight(line, "\r\n"))
+		}
+		if err == nil {
+			continue
+		}
+		if err != io.EOF || e.State() == environment.ProcessOfflineState {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func (e *Environment) waitForArmaRPT(prefix string, since time.Time) string {
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if path := e.latestArmaRPT(prefix, since.Add(-5*time.Second)); path != "" {
+			return path
+		}
+		if e.State() == environment.ProcessOfflineState {
+			return ""
+		}
+		time.Sleep(time.Second)
+	}
+	return ""
+}
+
+func (e *Environment) latestArmaRPT(prefix string, since time.Time) string {
+	profiles := e.env("ARMA_PROFILES", "profiles")
+	if !filepath.IsAbs(profiles) {
+		profiles = filepath.Join(e.meta.Root, profiles)
+	}
+	profileName := strings.Fields(prefix)[0]
+	if strings.HasPrefix(prefix, "hc ") {
+		profileName = strings.ReplaceAll(prefix, " ", "-")
+	}
+	var newest string
+	var newestAt time.Time
+	_ = filepath.WalkDir(profiles, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".rpt") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.ModTime().Before(since) {
+			return nil
+		}
+		lowerPath := strings.ToLower(path)
+		lowerName := strings.ToLower(profileName)
+		if lowerName != "" && !strings.Contains(lowerPath, lowerName) && e.hasNamedRPT(profiles, lowerName, since) {
+			return nil
+		}
+		if info.ModTime().After(newestAt) {
+			newest = path
+			newestAt = info.ModTime()
+		}
+		return nil
+	})
+	return newest
+}
+
+func (e *Environment) hasNamedRPT(profiles string, name string, since time.Time) bool {
+	found := false
+	_ = filepath.WalkDir(profiles, func(path string, d os.DirEntry, err error) error {
+		if found || err != nil || d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".rpt") {
+			return nil
+		}
+		info, err := d.Info()
+		if err == nil && !info.ModTime().Before(since) && strings.Contains(strings.ToLower(path), name) {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 func readLowLatency(r io.Reader, flushInterval time.Duration, callback func([]byte)) {
