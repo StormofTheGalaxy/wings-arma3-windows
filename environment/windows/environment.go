@@ -497,6 +497,11 @@ func (e *Environment) writeStartupParams() error {
 	clientMods := e.clientMods()
 	serverMods := e.env("SERVERMODS", "")
 	profiles := e.env("ARMA_PROFILES", "profiles")
+	if !filepath.IsAbs(profiles) {
+		_ = os.MkdirAll(filepath.Join(e.meta.Root, profiles), 0o755)
+	} else {
+		_ = os.MkdirAll(profiles, 0o755)
+	}
 	server := []string{
 		"-name=server",
 		"-profiles=" + profiles,
@@ -518,6 +523,7 @@ func (e *Environment) writeStartupParams() error {
 		server = append(server, "-filePatching")
 	}
 	if e.env("PARAM_NOLOGS", "0") == "1" {
+		e.publishLine("[daemon] warning: PARAM_NOLOGS=1 disables Arma RPT files; console output will be incomplete")
 		server = append(server, "-noLogs")
 	}
 	if maxMem := e.env("SERVER_MAXMEM", e.env("PARAM_MAXMEM", "")); maxMem != "" {
@@ -1012,6 +1018,7 @@ func (e *Environment) runAndStream(prefix string, cmd *exec.Cmd) error {
 func (e *Environment) tailArmaRPT(prefix string, since time.Time) {
 	path := e.waitForArmaRPT(prefix, since)
 	if path == "" {
+		e.publishLine("[daemon] warning: no " + prefix + " RPT file found; check PARAM_NOLOGS and ARMA_PROFILES")
 		return
 	}
 	e.publishLine("[daemon] reading " + prefix + " RPT: " + path)
@@ -1054,36 +1061,73 @@ func (e *Environment) waitForArmaRPT(prefix string, since time.Time) string {
 }
 
 func (e *Environment) latestArmaRPT(prefix string, since time.Time) string {
-	profiles := e.env("ARMA_PROFILES", "profiles")
-	if !filepath.IsAbs(profiles) {
-		profiles = filepath.Join(e.meta.Root, profiles)
-	}
 	profileName := strings.Fields(prefix)[0]
 	if strings.HasPrefix(prefix, "hc ") {
 		profileName = strings.ReplaceAll(prefix, " ", "-")
 	}
 	var newest string
 	var newestAt time.Time
-	_ = filepath.WalkDir(profiles, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".rpt") {
+	for _, dir := range e.armaRPTSearchDirs() {
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".rpt") {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil || info.ModTime().Before(since) {
+				return nil
+			}
+			lowerPath := strings.ToLower(path)
+			lowerName := strings.ToLower(profileName)
+			if lowerName != "" && !strings.Contains(lowerPath, lowerName) && e.hasNamedRPT(dir, lowerName, since) {
+				return nil
+			}
+			if info.ModTime().After(newestAt) {
+				newest = path
+				newestAt = info.ModTime()
+			}
 			return nil
-		}
-		info, err := d.Info()
-		if err != nil || info.ModTime().Before(since) {
-			return nil
-		}
-		lowerPath := strings.ToLower(path)
-		lowerName := strings.ToLower(profileName)
-		if lowerName != "" && !strings.Contains(lowerPath, lowerName) && e.hasNamedRPT(profiles, lowerName, since) {
-			return nil
-		}
-		if info.ModTime().After(newestAt) {
-			newest = path
-			newestAt = info.ModTime()
-		}
-		return nil
-	})
+		})
+	}
 	return newest
+}
+
+func (e *Environment) armaRPTSearchDirs() []string {
+	profiles := e.env("ARMA_PROFILES", "profiles")
+	if !filepath.IsAbs(profiles) {
+		profiles = filepath.Join(e.meta.Root, profiles)
+	}
+	dirs := []string{
+		profiles,
+		filepath.Join(e.meta.Root, "rpt_logs"),
+		filepath.Join(e.meta.Root, "_mounts", "rpt_logs"),
+		filepath.Join(e.meta.Root, "DocumentsOfArma"),
+		filepath.Join(e.meta.Root, "_mounts", "DocumentsOfArma"),
+	}
+	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+		dirs = append(dirs, filepath.Join(localAppData, "Arma 3"))
+	}
+	if userProfile := strings.TrimSpace(os.Getenv("USERPROFILE")); userProfile != "" {
+		dirs = append(dirs,
+			filepath.Join(userProfile, "AppData", "Local", "Arma 3"),
+			filepath.Join(userProfile, "Documents", "Arma 3"),
+		)
+	}
+
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		dir = filepath.Clean(strings.TrimSpace(dir))
+		if dir == "." || dir == "" {
+			continue
+		}
+		key := strings.ToLower(dir)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, dir)
+	}
+	return out
 }
 
 func (e *Environment) hasNamedRPT(profiles string, name string, since time.Time) bool {
