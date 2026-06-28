@@ -227,22 +227,10 @@ func (e *Environment) SendCommand(command string) error {
 	}
 
 	err := fmt.Errorf(
-	"неизвестная команда: %s\n\nДоступные команды:\n%s",
+	"неизвестная команда: %s | Доступные команды: update, update-mods, update-server, restart-hc, update-mission [url.pbo] [filename.pbo]",
 	command,
-	strings.Join(availableConsoleCommands(), "\n"),
 	)
-	e.publishLine("[daemon] " + err.Error())
 	return err
-}
-
-func availableConsoleCommands() []string {
-	return []string{
-		"update — обновить сервер и моды",
-		"update-mods — обновить только моды",
-		"update-server— обновить только сервер",
-		"restart-hc — перезапустить Headless Clients",
-		"update-mission [url.pbo] [filename.pbo] — скачать миссию и перезапустить сервер",
-	}
 }
 
 func (e *Environment) Readlog(lines int) ([]string, error) {
