@@ -213,37 +213,36 @@ func (e *Environment) SendCommand(command string) error {
 	if command == "" {
 		return nil
 	}
+
 	if mission, ok := parseMissionDownloadCommand(command); ok {
 		return e.UpdateMissionWithRestart(context.Background(), mission)
 	}
+
 	if update, ok := parseUpdateCommand(command); ok {
 		return e.RunUpdate(context.Background(), update)
 	}
+
 	if isRestartHeadlessCommand(command) {
 		return e.RestartHeadlessClients(context.Background())
 	}
-	e.publishLine("> powershell " + command)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
-	cmd.Dir = e.meta.Root
-	cmd.Env = append(os.Environ(), e.Configuration.EnvironmentVariables()...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	done := make(chan struct{}, 2)
-	go func() { e.scanPipe("powershell", stdout); done <- struct{}{} }()
-	go func() { e.scanPipe("powershell", stderr); done <- struct{}{} }()
-	err = cmd.Wait()
-	<-done
-	<-done
+
+	err := fmt.Errorf(
+	"неизвестная команда: %s\n\nДоступные команды:\n%s",
+	command,
+	strings.Join(availableConsoleCommands(), "\n"),
+	)
+	e.publishLine("[daemon] " + err.Error())
 	return err
+}
+
+func availableConsoleCommands() []string {
+	return []string{
+		"update — обновить сервер и моды",
+		"update-mods — обновить только моды",
+		"update-server— обновить только сервер",
+		"restart-hc — перезапустить Headless Clients",
+		"update-mission [url.pbo] [filename.pbo] — скачать миссию и перезапустить сервер",
+	}
 }
 
 func (e *Environment) Readlog(lines int) ([]string, error) {
