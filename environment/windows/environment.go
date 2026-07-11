@@ -121,7 +121,9 @@ func (e *Environment) Start(ctx context.Context) error {
 		return err
 	}
 
-	cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), "-par=startup_params_server.txt")
+	serverParams := e.serverParams()
+	e.publishLine("[daemon] server params: " + strings.Join(redactParams(serverParams), " "))
+	cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), serverParams...)
 	if err != nil {
 		e.SetState(environment.ProcessOfflineState)
 		return err
@@ -328,9 +330,8 @@ func (e *Environment) prepareArma(ctx context.Context) error {
 	if err := e.runSteamPreset(ctx); err != nil {
 		return err
 	}
-	if err := e.writeStartupParams(); err != nil {
-		return err
-	}
+	e.ensureProfilesDir()
+	e.removeLegacyParamFiles()
 	return nil
 }
 
@@ -480,61 +481,139 @@ func (e *Environment) runSteamCMD(ctx context.Context, steamcmd string, args ...
 	return e.runAndStream("steamcmd", cmd)
 }
 
-func (e *Environment) writeStartupParams() error {
-	clientMods := e.clientMods()
-	serverMods := e.env("SERVERMODS", "")
-	profiles := e.env("ARMA_PROFILES", "profiles")
+func (e *Environment) profilesPath() string {
+	return e.env("ARMA_PROFILES", "profiles")
+}
+
+func (e *Environment) ensureProfilesDir() {
+	profiles := e.profilesPath()
 	if !filepath.IsAbs(profiles) {
-		_ = os.MkdirAll(filepath.Join(e.meta.Root, profiles), 0o755)
-	} else {
-		_ = os.MkdirAll(profiles, 0o755)
+		profiles = filepath.Join(e.meta.Root, profiles)
 	}
-	server := []string{
+	_ = os.MkdirAll(profiles, 0o755)
+}
+
+// removeLegacyParamFiles cleans up -par files written by older versions of
+// this daemon; parameters are now passed on the command line only.
+func (e *Environment) removeLegacyParamFiles() {
+	for _, name := range []string{"startup_params_server.txt", "startup_params_hc.txt"} {
+		_ = os.Remove(filepath.Join(e.meta.Root, name))
+	}
+}
+
+// serverParams builds the dedicated server command line. Everything is passed
+// directly as process arguments (never via -par) because the Arma engine
+// ignores low-level options (-cpuCount, -exThreads, -malloc, -maxMem,
+// -profiles) when they come from a parameter file.
+func (e *Environment) serverParams() []string {
+	params := []string{
 		"-name=server",
-		"-profiles=" + profiles,
+		"-profiles=" + e.profilesPath(),
 		"-ip=0.0.0.0",
 		"-port=" + e.env("SERVER_PORT", "2302"),
 		"-cfg=basic.cfg",
 		"-config=server.cfg",
-		"-mod=" + clientMods,
-		"-serverMod=" + serverMods,
+		"-mod=" + e.clientMods(),
+		"-serverMod=" + e.env("SERVERMODS", ""),
 		"-limitFPS=" + e.env("PARAM_LIMITFPS", "50"),
 	}
 	if e.env("PARAM_LOADMISSIONTOMEMORY", "1") == "1" {
-		server = append(server, "-loadMissionToMemory")
+		params = append(params, "-loadMissionToMemory")
 	}
 	if e.env("PARAM_AUTOINIT", "0") == "1" {
-		server = append(server, "-autoInit")
+		params = append(params, "-autoInit")
 	}
 	if e.env("PARAM_FILEPATCHING", "0") == "1" {
-		server = append(server, "-filePatching")
+		params = append(params, "-filePatching")
 	}
 	if e.env("PARAM_NOLOGS", "0") == "1" {
 		e.publishLine("[daemon] warning: PARAM_NOLOGS=1 disables Arma RPT files; console output will be incomplete")
-		server = append(server, "-noLogs")
+		params = append(params, "-noLogs")
 	}
-	if maxMem := e.env("SERVER_MAXMEM", e.env("PARAM_MAXMEM", "")); maxMem != "" {
-		server = append(server, "-maxMem="+maxMem)
+	if v := e.env("SERVER_MAXMEM", e.env("PARAM_MAXMEM", "")); v != "" {
+		params = append(params, "-maxMem="+v)
 	}
-	hc := []string{
+	if v := e.env("SERVER_CPUCOUNT", e.env("PARAM_CPUCOUNT", "")); v != "" {
+		params = append(params, "-cpuCount="+v)
+	}
+	if v := e.env("SERVER_EXTHREADS", e.env("PARAM_EXTHREADS", "")); v != "" {
+		params = append(params, "-exThreads="+v)
+	}
+	if v := e.env("SERVER_MALLOC", e.env("PARAM_MALLOC", "")); v != "" {
+		params = append(params, "-malloc="+v)
+	}
+	return append(params, splitParams(e.env("SERVER_PARAMS", ""))...)
+}
+
+// hcParams builds the command line for headless client number index. HC_*
+// variables take precedence; HC_PARAMS appends arbitrary custom parameters.
+func (e *Environment) hcParams(index int) []string {
+	params := []string{
 		"-client",
-		"-profiles=" + profiles,
+		fmt.Sprintf("-name=hc-%d", index),
+		"-profiles=" + e.profilesPath(),
 		"-ip=127.0.0.1",
 		"-port=" + e.env("SERVER_PORT", "2302"),
 		"-password=" + e.env("SERVER_PASSWORD", ""),
-		"-mod=" + clientMods,
+		"-mod=" + e.clientMods(),
 		"-limitFPS=" + e.env("HC_LIMITFPS", e.env("PARAM_LIMITFPS", "50")),
 	}
-	if e.env("PARAM_FILEPATCHING", "0") == "1" {
-		hc = append(hc, "-filePatching")
+	if e.env("HC_FILEPATCHING", e.env("PARAM_FILEPATCHING", "0")) == "1" {
+		params = append(params, "-filePatching")
 	}
-	if maxMem := e.env("HC_MAXMEM", ""); maxMem != "" {
-		hc = append(hc, "-maxMem="+maxMem)
+	if v := e.env("HC_MAXMEM", ""); v != "" {
+		params = append(params, "-maxMem="+v)
 	}
-	if err := os.WriteFile(filepath.Join(e.meta.Root, "startup_params_server.txt"), []byte(strings.Join(server, "\r\n")+"\r\n"), 0o644); err != nil {
-		return err
+	if v := e.env("HC_CPUCOUNT", ""); v != "" {
+		params = append(params, "-cpuCount="+v)
 	}
-	return os.WriteFile(filepath.Join(e.meta.Root, "startup_params_hc.txt"), []byte(strings.Join(hc, "\r\n")+"\r\n"), 0o644)
+	if v := e.env("HC_EXTHREADS", ""); v != "" {
+		params = append(params, "-exThreads="+v)
+	}
+	if v := e.env("HC_MALLOC", e.env("PARAM_MALLOC", "")); v != "" {
+		params = append(params, "-malloc="+v)
+	}
+	return append(params, splitParams(e.env("HC_PARAMS", ""))...)
+}
+
+// splitParams splits a raw parameter string on whitespace while keeping
+// double-quoted segments together, so values with spaces can be passed as
+// e.g. -mod="@some mod;@other".
+func splitParams(raw string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuotes := false
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range raw {
+		switch {
+		case r == '"':
+			inQuotes = !inQuotes
+		case !inQuotes && (r == ' ' || r == '\t' || r == '\r' || r == '\n'):
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+// redactParams masks sensitive values (currently only -password) so the
+// composed command line can be written to the console log.
+func redactParams(params []string) []string {
+	out := make([]string, len(params))
+	copy(out, params)
+	for i, p := range out {
+		if strings.HasPrefix(strings.ToLower(p), "-password=") && len(p) > len("-password=") {
+			out[i] = "-password=REDACTED"
+		}
+	}
+	return out
 }
 
 func (e *Environment) startHeadlessClients(ctx context.Context) error {
@@ -546,7 +625,11 @@ func (e *Environment) startHeadlessClients(ctx context.Context) error {
 	var first error
 	var pids []int
 	for i := 1; i <= n; i++ {
-		cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), "-par=startup_params_hc.txt", fmt.Sprintf("-name=hc-%d", i))
+		hcParams := e.hcParams(i)
+		if i == 1 {
+			e.publishLine("[daemon] hc params: " + strings.Join(redactParams(hcParams), " "))
+		}
+		cmd, err := e.command(e.env("SERVER_BINARY", "arma3server_x64.exe"), hcParams...)
 		if err != nil {
 			if first == nil {
 				first = err
@@ -884,20 +967,24 @@ func (e *Environment) killExistingArmaProcesses(ctx context.Context, server bool
 }
 
 func (e *Environment) killProcessesByCommandLine(ctx context.Context, server bool, hc bool) error {
-	var params []string
+	// Server processes are identified by -config= (only the dedicated server
+	// gets it), headless clients by -client. The legacy startup_params_*.txt
+	// markers are kept so processes started by an older daemon version that
+	// still used -par files are cleaned up too.
+	var markers []string
 	if server {
-		params = append(params, "startup_params_server.txt")
+		markers = append(markers, "-config=", "startup_params_server.txt")
 	}
 	if hc {
-		params = append(params, "startup_params_hc.txt")
+		markers = append(markers, "-client", "startup_params_hc.txt")
 	}
-	if len(params) == 0 {
+	if len(markers) == 0 {
 		return nil
 	}
 
 	var checks []string
-	for _, param := range params {
-		checks = append(checks, fmt.Sprintf("$cmd.Contains(%s)", powershellQuote(param)))
+	for _, marker := range markers {
+		checks = append(checks, fmt.Sprintf("$cmd.Contains(%s)", powershellQuote(marker)))
 	}
 	script := fmt.Sprintf(`$root = %s
 Get-CimInstance Win32_Process | Where-Object {

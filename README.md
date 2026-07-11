@@ -27,6 +27,33 @@ I would like to extend my sincere thanks to the following sponsors for helping f
 | [**Blueprint**](https://blueprint.zip/?utm_source=pterodactyl&utm_medium=sponsor) | Create and install Pterodactyl addons and themes with the growing Blueprint framework - the package-manager for Pterodactyl. Use multiple modifications at once without worrying about conflicts and make use of the large extension ecosystem. |
 | [**indifferent broccoli**](https://indifferentbroccoli.com/)                      | indifferent broccoli is a game server hosting and rental company. With us, you get top-notch computer power for your gaming sessions. We destroy lag, latency, and complexity--letting you focus on the fun stuff.                              |
 
+## Arma 3 startup parameters (this fork)
+
+The Windows Arma 3 environment passes all startup parameters directly on the
+command line — no `-par` file is used, because the Arma engine ignores
+low-level options (`-cpuCount`, `-exThreads`, `-malloc`, `-maxMem`,
+`-profiles`) when they come from a parameter file.
+
+Custom parameters via server environment variables:
+
+| Variable | Applies to | Description |
+|---|---|---|
+| `SERVER_PARAMS` | server | Extra raw parameters appended to the server command line, space separated (quotes keep values with spaces together), e.g. `-enableHT -hugePages` |
+| `HC_PARAMS` | headless clients | Extra raw parameters appended to every HC command line |
+| `SERVER_CPUCOUNT` / `HC_CPUCOUNT` | server / HC | `-cpuCount=N` |
+| `SERVER_EXTHREADS` / `HC_EXTHREADS` | server / HC | `-exThreads=N` |
+| `SERVER_MALLOC` / `HC_MALLOC` | server / HC | `-malloc=DLL` (HC falls back to `PARAM_MALLOC`) |
+| `SERVER_MAXMEM` / `HC_MAXMEM` | server / HC | `-maxMem=MB` |
+| `HC_FILEPATCHING` | HC | `1` adds `-filePatching` (falls back to `PARAM_FILEPATCHING`) |
+
+Existing variables (`SERVER_PORT`, `SERVER_PASSWORD`, `MODIFICATIONS`,
+`SERVERMODS`, `ARMA_PROFILES`, `HC_NUM`, `HC_LIMITFPS`, `PARAM_LIMITFPS`,
+`PARAM_LOADMISSIONTOMEMORY`, `PARAM_AUTOINIT`, `PARAM_FILEPATCHING`,
+`PARAM_NOLOGS`, `PARAM_MAXMEM`) keep working; `PARAM_CPUCOUNT`,
+`PARAM_EXTHREADS` and `PARAM_MALLOC` are accepted as fallbacks for the
+`SERVER_*` variants. The composed command line is printed to the server
+console on start with the password redacted.
+
 ## Documentation
 
 * [Panel Documentation](https://pterodactyl.io/panel/1.0/getting_started.html)
